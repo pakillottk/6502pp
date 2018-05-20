@@ -14,7 +14,6 @@ void print_inst( Instruction* i ) {
 CPU::CPU( unsigned char* data, unsigned nbytes ) {
     //TEMP CODE
     memset( RAM, 0, sizeof RAM );
-    memset( Stack, 0, sizeof Stack );
     memcpy( &RAM[0xC000], data, nbytes );
     
     memset( regs, 0, sizeof regs );
@@ -22,13 +21,16 @@ CPU::CPU( unsigned char* data, unsigned nbytes ) {
     P = 0x24;
     //TMP
     PC=0xC000;
+    //PC=0xC000;
 }
 
 uint8_t CPU::RB(uint16_t addr) {
+    std::cout << "Reading at " << std::hex << (int)addr <<std::endl;
     return RAM[addr];
 }
 
 uint8_t CPU::WB(uint16_t addr, uint8_t v) {
+    std::cout << "Store at " << std::hex << (int)addr << ": " << (int)v << std::endl;
     return RAM[addr] = v;
 }
 
@@ -77,6 +79,9 @@ void CPU::print_state() {
 */
 unsigned CPU::calcOperand(ADDR_MODE mode) {
     const uint8_t t = RB(PC+1), s = RB(PC+2);
+    uint16_t c = pgmbin::combineLittleEndian(t,s);
+    uint8_t truncNextT = (t+1)&0xFF;
+    uint16_t truncNextC = pgmbin::combineLittleEndian(truncNextT,s);
     switch( mode ) {
         case ACCUMULATOR:
             return regs[REG_A];
@@ -84,15 +89,17 @@ unsigned CPU::calcOperand(ADDR_MODE mode) {
         case IMMEDIATE: {
             return t;
         }
-        case IND:
+        case IND: {
+            return pgmbin::combineLittleEndian( RB(c), RB(truncNextC));
+        }
         case ABS: {
-            return pgmbin::combineLittleEndian(t, s);
+            return c;
         }
         case ABS_X: {
-            return pgmbin::combineLittleEndian(t, s) + regs[REG_X];
+            return c + regs[REG_X];
         }
         case ABS_Y: {
-            return pgmbin::combineLittleEndian(t, s) + regs[REG_Y];
+            return c + regs[REG_Y];
         }
         case ZPG: {
             return 0x00FF & t;
@@ -104,10 +111,10 @@ unsigned CPU::calcOperand(ADDR_MODE mode) {
             return 0x00FF & ( t + regs[REG_Y] );
         }
         case X_IND: {
-            return 0x00FF & pgmbin::combineLittleEndian(t + regs[REG_X], t + regs[REG_X] + 1);
+            return pgmbin::combineLittleEndian(RB(t+regs[REG_X]&0xFF),RB((t+regs[REG_X]+1)&0xFF));
         }
-        case IND_Y: {            
-            return pgmbin::combineLittleEndian(t, t + 1) + regs[REG_Y];
+        case IND_Y: {  
+            return pgmbin::combineLittleEndian(RB(t&0xFF), RB((t + 1)&0xFF)) + regs[REG_Y];
         }
         case IMPL: {
             return RB(PC);
@@ -116,11 +123,11 @@ unsigned CPU::calcOperand(ADDR_MODE mode) {
 }
 
 void CPU::push( uint8_t v ) {
-    Stack[ SP-- ] = v;
+    RAM[ 0x100 + (SP--) ] = v;
 }
 
 uint8_t CPU::pull() {
-    return Stack[++SP];
+    return RAM[0x100+(++SP)];
 }
 
 /*
@@ -187,11 +194,10 @@ uint8_t CPU::pull() {
 #define ADC() temp = regs[REG_A] + operand + pgmbin::getBitAt<C_flag>( P ); UPDATE_C( temp ) UPDATE_V(temp)\
               tmp8b=temp; SET_REG(REG_A, tmp8b)
 //Subs with borrow into A and update flags
-#define SBC() operand=~operand; ADC()
-//PRO TIP: SUB - adc(~arg)
+#define SBC() operand=~operand&0xFF; ADC()
 
 //Performs a bitwise operation between REG_A and operand (updates flags)
-#define LOGIC_OP( OPERATOR ) SET_REG( REG_A, regs[REG_A] OPERATOR operand ) 
+#define LOGIC_OP( OPERATOR ) tmp8b = regs[REG_A] OPERATOR operand; SET_REG( REG_A, tmp8b ) 
 
 //Shift operand 1 bit to the left and update C flag
 #define SHIFT_L() temp = ( operand << 1 ); UPDATE_C( temp ) temp&=0xFF;
@@ -199,12 +205,13 @@ uint8_t CPU::pull() {
 #define SHIFT_R() P = pgmbin::setBitAt<C_flag>(pgmbin::getBitAt<1>(operand), P); temp = pgmbin::swapBits<8,1>(operand); temp = ( operand >> 1 ); 
 
 //Shift operand 1 bit to left (stores in temp8b) set bit 1 to Carry. Set carry to original operand bit 8.
-#define ROL() tmp8b = ( operand << 1 );  tmp8b = pgmbin::setBitAt<1>( pgmbin::getBitAt<C_flag>(P), tmp8b); P = pgmbin::setBitAt<C_flag>( pgmbin::getBitAt<8>(operand), tmp8b); 
+#define ROL() tmp8b = ( operand << 1 );  tmp8b = pgmbin::setBitAt<1>( pgmbin::getBitAt<C_flag>(P), tmp8b); P = pgmbin::setBitAt<C_flag>( pgmbin::getBitAt<8>(operand), P); 
 //Shift operand 1 bit to right (stores in temp8b) set bit 8 to Carry. Set carry to original operand bit 1.
-#define ROR() tmp8b = ( operand >> 1 );  tmp8b = pgmbin::setBitAt<8>( pgmbin::getBitAt<C_flag>(P), tmp8b); P = pgmbin::setBitAt<C_flag>( pgmbin::getBitAt<1>(operand), tmp8b);
+#define ROR() tmp8b = ( operand >> 1 );  tmp8b = pgmbin::setBitAt<8>( pgmbin::getBitAt<C_flag>(P), tmp8b); P = pgmbin::setBitAt<C_flag>( pgmbin::getBitAt<1>(operand), P);
 
 //bits 8 and 7(1-based) to flags N,V. AND A with operand and update Z
-#define BITS() LOGIC_OP( &= ) P = pgmbin::setBitAt<N_flag>( pgmbin::getBitAt<8>(operand), P ); P = pgmbin::setBitAt<7>( pgmbin::getBitAt<7>(operand), P );
+#define BITS() tmp8b=regs[REG_A]&operand; P=pgmbin::setBitAt<Z_flag>(tmp8b==0, P); P = pgmbin::setBitAt<N_flag>( pgmbin::getBitAt<8>(operand), P); P = pgmbin::setBitAt<V_flag>( pgmbin::getBitAt<7>(operand), P);
+//LOGIC_OP( &= ) P = pgmbin::setBitAt<N_flag>( pgmbin::getBitAt<8>(operand), P ); P = pgmbin::setBitAt<7>( pgmbin::getBitAt<7>(operand), P );
                
 //Reads reg and sets Z = reg==operand C = reg >= operand and updates NZ with reg-operand
 #define CMP(REG) tmp8b = regs[REG]; P = pgmbin::setBitAt<Z_flag>(tmp8b == operand, P);\
@@ -243,14 +250,14 @@ Instruction CPU::evaluate(uint8_t opcode) {
         OP( 0x61,     "adc ind,X",        6,        X_IND,                                                        READ() ADC())        
         OP( 0x71,     "adc ind,Y",        5,        IND_Y,                                                        READ() ADC())                 
         //AND
-        OP( 0x29,         "and #",        2,    IMMEDIATE,                                                        LOGIC_OP(&=))
-        OP( 0x25,       "and zpg",        3,          ZPG,                                                 READ() LOGIC_OP(&=))
-        OP( 0x35,     "and zpg,x",        4,        ZPG_X,                                                 READ() LOGIC_OP(&=))
-        OP( 0x2d,       "and abs",        4,          ABS,                                                 READ() LOGIC_OP(&=))
-        OP( 0x3d,     "and abs,x",        4,        ABS_X,                                                 READ() LOGIC_OP(&=))
-        OP( 0x39,     "and abs,y",        4,        ABS_Y,                                                 READ() LOGIC_OP(&=))
-        OP( 0x21,     "and ind,x",        6,        X_IND,                                                 READ() LOGIC_OP(&=))
-        OP( 0x31,     "and ind,y",        5,        IND_Y,                                                 READ() LOGIC_OP(&=))       
+        OP( 0x29,         "and #",        2,    IMMEDIATE,                                                         LOGIC_OP(&))
+        OP( 0x25,       "and zpg",        3,          ZPG,                                                  READ() LOGIC_OP(&))
+        OP( 0x35,     "and zpg,x",        4,        ZPG_X,                                                  READ() LOGIC_OP(&))
+        OP( 0x2d,       "and abs",        4,          ABS,                                                  READ() LOGIC_OP(&))
+        OP( 0x3d,     "and abs,x",        4,        ABS_X,                                                  READ() LOGIC_OP(&))
+        OP( 0x39,     "and abs,y",        4,        ABS_Y,                                                  READ() LOGIC_OP(&))
+        OP( 0x21,     "and ind,x",        6,        X_IND,                                                  READ() LOGIC_OP(&))
+        OP( 0x31,     "and ind,y",        5,        IND_Y,                                                  READ() LOGIC_OP(&))       
         //ASL
         OP( 0x0a,         "ASL A",        2,  ACCUMULATOR,                                      SHIFT_L() SET_REG(REG_A, temp))
         OP( 0x06,       "ASL zpg",        5,          ZPG,           READ() SHIFT_L() STORE(addr, temp) UPDATE_NZFLAGS( temp ))
@@ -266,9 +273,9 @@ Instruction CPU::evaluate(uint8_t opcode) {
         OP( 0x10,       "BPL rel",        2,          REL,                           COND_BRANCH(!pgmbin::getBitAt<N_flag>(P))) 
         OP( 0x70,       "BVC rel",        2,          REL,                           COND_BRANCH( pgmbin::getBitAt<V_flag>(P)))
         OP( 0x50,       "BVC rel",        2,          REL,                           COND_BRANCH(!pgmbin::getBitAt<V_flag>(P)))                
-        //BITS
-        OP( 0x24,      "bits zpg",        3,          ZPG,                                                       READ() BITS())
-        OP( 0x2c,      "bits abs",        4,          ABS,                                                       READ() BITS())        
+        //BITs
+        OP( 0x24,       "bit zpg",        3,          ZPG,                                                       READ() BITS())
+        OP( 0x2c,       "bit abs",        4,          ABS,                                                       READ() BITS())        
         //FLAG CLEARS
         OP( 0x18,           "CLC",        2,         IMPL,                                  P = pgmbin::setBitAt<C_flag>(0, P))
         OP( 0xd8,           "CLD",        2,         IMPL,                                  P = pgmbin::setBitAt<D_flag>(0, P))
@@ -292,37 +299,37 @@ Instruction CPU::evaluate(uint8_t opcode) {
         OP( 0xc4,       "cpy zpg",        3,          ZPG,                                                   READ() CMP(REG_Y))
         OP( 0xcc,       "cpy abs",        4,          ABS,                                                   READ() CMP(REG_Y))        
         //DECs
-        OP( 0xc6,       "DEC zpg",        5,          ZPG,          READ() DEC(tmp8b) UPDATE_NZFLAGS(tmp8b) STORE(addr, tmp8b))
-        OP( 0xd6,     "DEC zpg,x",        6,        ZPG_X,          READ() DEC(tmp8b) UPDATE_NZFLAGS(tmp8b) STORE(addr, tmp8b))
-        OP( 0xce,       "DEC abs",        3,          ABS,          READ() DEC(tmp8b) UPDATE_NZFLAGS(tmp8b) STORE(addr, tmp8b))
-        OP( 0xde,     "DEC abs,x",        7,        ABS_X,          READ() DEC(tmp8b) UPDATE_NZFLAGS(tmp8b) STORE(addr, tmp8b))        
+        OP( 0xc6,       "DEC zpg",        5,          ZPG,        READ() DEC(operand) UPDATE_NZFLAGS(tmp8b) STORE(addr, tmp8b))
+        OP( 0xd6,     "DEC zpg,x",        6,        ZPG_X,        READ() DEC(operand) UPDATE_NZFLAGS(tmp8b) STORE(addr, tmp8b))
+        OP( 0xce,       "DEC abs",        3,          ABS,        READ() DEC(operand) UPDATE_NZFLAGS(tmp8b) STORE(addr, tmp8b))
+        OP( 0xde,     "DEC abs,x",        7,        ABS_X,        READ() DEC(operand) UPDATE_NZFLAGS(tmp8b) STORE(addr, tmp8b))        
         //DEX
         OP( 0xca,      "DEX impl",        2,         IMPL,                              DEC(regs[REG_X]) SET_REG(REG_X, tmp8b))
         //DEY
         OP( 0x88,      "DEY impl",        2,         IMPL,                              DEC(regs[REG_Y]) SET_REG(REG_Y, tmp8b))  
         //EOR
-        OP( 0x49,         "eor #",        2,    IMMEDIATE,                                                        LOGIC_OP(^=))
-        OP( 0x45,       "eor zpg",        3,          ZPG,                                                 READ() LOGIC_OP(^=))
-        OP( 0x55,     "eor zpg,x",        4,        ZPG_X,                                                 READ() LOGIC_OP(^=))
-        OP( 0x4d,       "eor abs",        4,          ABS,                                                 READ() LOGIC_OP(^=))
-        OP( 0x5d,     "eor abs,x",        4,        ABS_X,                                                 READ() LOGIC_OP(^=))
-        OP( 0x59,     "eor abs,y",        4,        ABS_Y,                                                 READ() LOGIC_OP(^=))
-        OP( 0x41,     "eor ind,x",        6,        X_IND,                                                 READ() LOGIC_OP(^=))
-        OP( 0x51,     "eor ind,y",        5,        IND_Y,                                                 READ() LOGIC_OP(^=))
+        OP( 0x49,         "eor #",        2,    IMMEDIATE,                                                         LOGIC_OP(^))
+        OP( 0x45,       "eor zpg",        3,          ZPG,                                                  READ() LOGIC_OP(^))
+        OP( 0x55,     "eor zpg,x",        4,        ZPG_X,                                                  READ() LOGIC_OP(^))
+        OP( 0x4d,       "eor abs",        4,          ABS,                                                  READ() LOGIC_OP(^))
+        OP( 0x5d,     "eor abs,x",        4,        ABS_X,                                                  READ() LOGIC_OP(^))
+        OP( 0x59,     "eor abs,y",        4,        ABS_Y,                                                  READ() LOGIC_OP(^))
+        OP( 0x41,     "eor ind,x",        6,        X_IND,                                                  READ() LOGIC_OP(^))
+        OP( 0x51,     "eor ind,y",        5,        IND_Y,                                                  READ() LOGIC_OP(^))
         //INCs
-        OP( 0xe6,       "INC zpg",        5,          ZPG,          READ() INC(tmp8b) UPDATE_NZFLAGS(tmp8b) STORE(addr, tmp8b))
-        OP( 0xf6,     "INC zpg,x",        6,        ZPG_X,          READ() INC(tmp8b) UPDATE_NZFLAGS(tmp8b) STORE(addr, tmp8b))
-        OP( 0xee,       "INC abs",        6,          ABS,          READ() INC(tmp8b) UPDATE_NZFLAGS(tmp8b) STORE(addr, tmp8b))
-        OP( 0xfe,     "INC abs,x",        7,        ABS_X,          READ() INC(tmp8b) UPDATE_NZFLAGS(tmp8b) STORE(addr, tmp8b)) 
+        OP( 0xe6,       "INC zpg",        5,          ZPG,        READ() INC(operand) UPDATE_NZFLAGS(tmp8b) STORE(addr, tmp8b))
+        OP( 0xf6,     "INC zpg,x",        6,        ZPG_X,        READ() INC(operand) UPDATE_NZFLAGS(tmp8b) STORE(addr, tmp8b))
+        OP( 0xee,       "INC abs",        6,          ABS,        READ() INC(operand) UPDATE_NZFLAGS(tmp8b) STORE(addr, tmp8b))
+        OP( 0xfe,     "INC abs,x",        7,        ABS_X,        READ() INC(operand) UPDATE_NZFLAGS(tmp8b) STORE(addr, tmp8b)) 
         //INX
         OP( 0xe8,      "INX impl",        2,         IMPL,                              INC(regs[REG_X]) SET_REG(REG_X, tmp8b))
         //INY
         OP( 0xc8,      "INY impl",        2,         IMPL,                              INC(regs[REG_Y]) SET_REG(REG_Y, tmp8b))  
         //JMPs
         OP( 0x4c,       "jmp abs",        3,          ABS,                                                            SET_PC())
-        OP( 0x6c,       "jmp ind",        5,          IND,                                                     READ() SET_PC())
+        OP( 0x6c,       "jmp ind",        5,          IND,                                                            SET_PC())
         //JSR
-        OP( 0x20,       "JSR abs",        6,          ABS,                                         STACK_PUSH16(PC+2) SET_PC())
+        OP( 0x20,       "JSR abs",        6,          ABS,                                        STACK_PUSH16((PC+2)) SET_PC())
         //LDAs
         OP( 0xa9,         "LDA #",        2,     IMMEDIATE,                                           SET_REG( REG_A, operand ))
         OP( 0xa5,       "LDA zpg",        3,          ZPG,                                     READ() SET_REG( REG_A, operand ))
@@ -351,16 +358,16 @@ Instruction CPU::evaluate(uint8_t opcode) {
         OP( 0x4e,       "LSR abs",        6,          ABS,            READ() SHIFT_R() STORE(addr, temp) UPDATE_NZFLAGS( temp ))
         OP( 0x5e,     "LSR abs,x",        7,        ABS_X,            READ() SHIFT_R() STORE(addr, temp) UPDATE_NZFLAGS( temp ))    
         //ORA
-        OP( 0x09,         "ORA #",        2,    IMMEDIATE,                                                        LOGIC_OP(|=))
-        OP( 0x05,       "ORA zpg",        3,          ZPG,                                                 READ() LOGIC_OP(|=))
-        OP( 0x15,     "ORA zpg,x",        4,        ZPG_X,                                                 READ() LOGIC_OP(|=))
-        OP( 0x0d,       "ORA abs",        4,          ABS,                                                 READ() LOGIC_OP(|=))
-        OP( 0x1d,     "ORA abs,x",        4,        ABS_X,                                                 READ() LOGIC_OP(|=))
-        OP( 0x19,     "ORA abs,y",        4,        ABS_Y,                                                 READ() LOGIC_OP(|=))
-        OP( 0x01,     "ORA ind,x",        6,        X_IND,                                                 READ() LOGIC_OP(|=))
-        OP( 0x11,     "ORA ind,y",        5,        IND_Y,                                                 READ() LOGIC_OP(|=))
+        OP( 0x09,         "ORA #",        2,    IMMEDIATE,                                                         LOGIC_OP(|))
+        OP( 0x05,       "ORA zpg",        3,          ZPG,                                                  READ() LOGIC_OP(|))
+        OP( 0x15,     "ORA zpg,x",        4,        ZPG_X,                                                  READ() LOGIC_OP(|))
+        OP( 0x0d,       "ORA abs",        4,          ABS,                                                  READ() LOGIC_OP(|))
+        OP( 0x1d,     "ORA abs,x",        4,        ABS_X,                                                  READ() LOGIC_OP(|))
+        OP( 0x19,     "ORA abs,y",        4,        ABS_Y,                                                  READ() LOGIC_OP(|))
+        OP( 0x01,     "ORA ind,x",        6,        X_IND,                                                  READ() LOGIC_OP(|))
+        OP( 0x11,     "ORA ind,y",        5,        IND_Y,                                                  READ() LOGIC_OP(|))
         //PHA       
-        OP( 0x48,           "PHA",        3,         IMPL,                                             STACK_PUSH(regs[REG_X]))
+        OP( 0x48,           "PHA",        3,         IMPL,                                             STACK_PUSH(regs[REG_A]))
         //PHP       
         OP( 0x08,           "PHP",        3,         IMPL,                                                       STACK_PUSH(P))
         //PLA       
@@ -380,7 +387,7 @@ Instruction CPU::evaluate(uint8_t opcode) {
         OP( 0x6e,       "ROR abs",        6,          ABS,             READ() ROR() STORE(addr, tmp8b) UPDATE_NZFLAGS( tmp8b ))
         OP( 0x7e,     "ROR abs,x",        7,        ABS_X,             READ() ROR() STORE(addr, tmp8b) UPDATE_NZFLAGS( tmp8b ))  
         //RETURNS
-        OP( 0x40,           "RTI",        6,         IMPL,                                          STACK_PULL(P) RESTORE_PC())
+        OP( 0x40,           "RTI",        6,         IMPL,                                    STACK_PULL(P) RESTORE_PC() PC--;)
         OP( 0x60,           "RTS",        6,         IMPL,                                                        RESTORE_PC())      
         //BRK
         OP( 0x00,           "brk",        1,         IMPL,   if(pgmbin::getBitAt<I_flag>(P)){STACK_PUSH16(PC+1) STACK_PUSH(P)})  
@@ -414,17 +421,17 @@ Instruction CPU::evaluate(uint8_t opcode) {
         OP( 0x94,     "STY zpg,x",        4,        ZPG_X,                                         STORE( operand, regs[REG_Y]))        
         OP( 0x8c,     "STY zpg,x",        4,          ABS,                                         STORE( operand, regs[REG_Y]))
         //TAX
-        OP( 0xaa,           "TAX",        2,         IMPL,                                   SET_REG( regs[REG_X], regs[REG_A]))
+        OP( 0xaa,           "TAX",        2,         IMPL,                 regs[REG_X]=regs[REG_A]; UPDATE_NZFLAGS(regs[REG_X]))
         //TAY
-        OP( 0xa8,           "TAY",        2,         IMPL,                                   SET_REG( regs[REG_Y], regs[REG_A]))    
+        OP( 0xa8,           "TAY",        2,         IMPL,                 regs[REG_Y]=regs[REG_A]; UPDATE_NZFLAGS(regs[REG_Y]))     
         //TSX
-        OP( 0xba,           "TSX",        2,         IMPL,                                            SET_REG( regs[REG_X], SP))
+        OP( 0xba,           "TSX",        2,         IMPL,                          regs[REG_X]=SP; UPDATE_NZFLAGS(regs[REG_X]))
         //TXA
-        OP( 0x8a,           "TXA",        2,         IMPL,                                   SET_REG( regs[REG_A], regs[REG_X]))
+        OP( 0x8a,           "TXA",        2,         IMPL,                 regs[REG_A]=regs[REG_X]; UPDATE_NZFLAGS(regs[REG_A]))
         //TXS
         OP( 0x9a,           "TXS",        2,         IMPL,                                                     SP = regs[REG_X])
         //TYA
-        OP( 0x98,           "TYA",        2,         IMPL,                                   SET_REG( regs[REG_A], regs[REG_Y]))
+        OP( 0x98,           "TYA",        2,         IMPL,                  regs[REG_A]=regs[REG_Y]; UPDATE_NZFLAGS(regs[REG_A]))
         case 0xEA:  
             return I;
         default:            
