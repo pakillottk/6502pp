@@ -144,7 +144,7 @@ uint8_t CPU::pull() {
     uint8_t tmp8b; uint16_t addr; ADDR_MODE mode;
 
 //Sets the PC using ins operand as offset
-#define OFFSET_PC() PC = PC + operand + 2; keep_pc = true;
+#define OFFSET_PC() PC = pgmbin::combine(PC>>8, (PC + operand + 2)&0xFF) ; keep_pc = true;
 
 //Sets PC to ins operand
 #define SET_PC() PC = operand; keep_pc = true;
@@ -182,7 +182,7 @@ uint8_t CPU::pull() {
 #define READ() addr = operand; operand = RB( operand );
 
 //If COND OFFSET_PC is called
-#define COND_BRANCH( COND ) if( COND ) { OFFSET_PC() }
+#define COND_BRANCH( COND )if( COND ){ OFFSET_PC() }
 
 //Sets the C flag if VAL > 0xFF
 #define UPDATE_C( VAL ) P = pgmbin::setBitAt<C_flag>( VAL > 0xFF, P ); 
